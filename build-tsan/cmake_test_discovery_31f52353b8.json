@@ -1,0 +1,114 @@
+{
+  "tests": 18,
+  "name": "AllTests",
+  "testsuites": [
+    {
+      "name": "RingBuffer",
+      "tests": 5,
+      "testsuite": [
+        {
+          "name": "PushPopSingleThreadedFIFO",
+          "file": "\/Users\/akhilarya\/UWMadisonAndF1\/Projects\/AetherMoE\/AetherMoE\/tests\/test_ring_buffer.cpp",
+          "line": 12
+        },
+        {
+          "name": "WrapAroundReuse",
+          "file": "\/Users\/akhilarya\/UWMadisonAndF1\/Projects\/AetherMoE\/AetherMoE\/tests\/test_ring_buffer.cpp",
+          "line": 29
+        },
+        {
+          "name": "SizeApproxTracksPushesAndPops",
+          "file": "\/Users\/akhilarya\/UWMadisonAndF1\/Projects\/AetherMoE\/AetherMoE\/tests\/test_ring_buffer.cpp",
+          "line": 39
+        },
+        {
+          "name": "SPMCStressNoDropsNoDuplicates",
+          "file": "\/Users\/akhilarya\/UWMadisonAndF1\/Projects\/AetherMoE\/AetherMoE\/tests\/test_ring_buffer.cpp",
+          "line": 54
+        },
+        {
+          "name": "CapacityReportedCorrectly",
+          "file": "\/Users\/akhilarya\/UWMadisonAndF1\/Projects\/AetherMoE\/AetherMoE\/tests\/test_ring_buffer.cpp",
+          "line": 106
+        }
+      ]
+    },
+    {
+      "name": "PageTable",
+      "tests": 8,
+      "testsuite": [
+        {
+          "name": "AllocatesBlocksLazilyAsSequenceGrows",
+          "file": "\/Users\/akhilarya\/UWMadisonAndF1\/Projects\/AetherMoE\/AetherMoE\/tests\/test_page_table.cpp",
+          "line": 10
+        },
+        {
+          "name": "FreeSequenceReturnsBlocksToPool",
+          "file": "\/Users\/akhilarya\/UWMadisonAndF1\/Projects\/AetherMoE\/AetherMoE\/tests\/test_page_table.cpp",
+          "line": 30
+        },
+        {
+          "name": "FreeUnknownSequenceIsNoOp",
+          "file": "\/Users\/akhilarya\/UWMadisonAndF1\/Projects\/AetherMoE\/AetherMoE\/tests\/test_page_table.cpp",
+          "line": 40
+        },
+        {
+          "name": "ExhaustionReturnsFalseWithoutPartialAllocation",
+          "file": "\/Users\/akhilarya\/UWMadisonAndF1\/Projects\/AetherMoE\/AetherMoE\/tests\/test_page_table.cpp",
+          "line": 46
+        },
+        {
+          "name": "NoBlockSharedBetweenTwoSequences",
+          "file": "\/Users\/akhilarya\/UWMadisonAndF1\/Projects\/AetherMoE\/AetherMoE\/tests\/test_page_table.cpp",
+          "line": 58
+        },
+        {
+          "name": "FragmentationRatioComputation",
+          "file": "\/Users\/akhilarya\/UWMadisonAndF1\/Projects\/AetherMoE\/AetherMoE\/tests\/test_page_table.cpp",
+          "line": 73
+        },
+        {
+          "name": "BlocksNeededForRounding",
+          "file": "\/Users\/akhilarya\/UWMadisonAndF1\/Projects\/AetherMoE\/AetherMoE\/tests\/test_page_table.cpp",
+          "line": 82
+        },
+        {
+          "name": "ConcurrentGrowAndFreeIsRaceFree",
+          "file": "\/Users\/akhilarya\/UWMadisonAndF1\/Projects\/AetherMoE\/AetherMoE\/tests\/test_page_table.cpp",
+          "line": 94
+        }
+      ]
+    },
+    {
+      "name": "Scheduler",
+      "tests": 5,
+      "testsuite": [
+        {
+          "name": "SinglePromptGoesPrefillThenDecodeThenFinished",
+          "file": "\/Users\/akhilarya\/UWMadisonAndF1\/Projects\/AetherMoE\/AetherMoE\/tests\/test_scheduler.cpp",
+          "line": 18
+        },
+        {
+          "name": "LargePromptSpansMultiplePrefillChunks",
+          "file": "\/Users\/akhilarya\/UWMadisonAndF1\/Projects\/AetherMoE\/AetherMoE\/tests\/test_scheduler.cpp",
+          "line": 45
+        },
+        {
+          "name": "DecodeIsPrioritizedOverNewPrefillAdmission",
+          "file": "\/Users\/akhilarya\/UWMadisonAndF1\/Projects\/AetherMoE\/AetherMoE\/tests\/test_scheduler.cpp",
+          "line": 68
+        },
+        {
+          "name": "BlockedOnPageTableCapacityDoesNotCrashOrCorrupt",
+          "file": "\/Users\/akhilarya\/UWMadisonAndF1\/Projects\/AetherMoE\/AetherMoE\/tests\/test_scheduler.cpp",
+          "line": 95
+        },
+        {
+          "name": "RandomizedWorkloadNeverThrowsAndAlwaysFinishesEventually",
+          "file": "\/Users\/akhilarya\/UWMadisonAndF1\/Projects\/AetherMoE\/AetherMoE\/tests\/test_scheduler.cpp",
+          "line": 129
+        }
+      ]
+    }
+  ]
+}

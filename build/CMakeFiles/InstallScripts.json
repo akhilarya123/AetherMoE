@@ -1,0 +1,12 @@
+{
+	"InstallScripts" : 
+	[
+		"/Users/akhilarya/UWMadisonAndF1/Projects/AetherMoE/AetherMoE/build/cmake_install.cmake",
+		"/Users/akhilarya/UWMadisonAndF1/Projects/AetherMoE/AetherMoE/build/_deps/googletest-build/cmake_install.cmake",
+		"/Users/akhilarya/UWMadisonAndF1/Projects/AetherMoE/AetherMoE/build/_deps/googletest-build/googlemock/cmake_install.cmake",
+		"/Users/akhilarya/UWMadisonAndF1/Projects/AetherMoE/AetherMoE/build/_deps/googletest-build/googletest/cmake_install.cmake",
+		"/Users/akhilarya/UWMadisonAndF1/Projects/AetherMoE/AetherMoE/build/_deps/httplib-build/cmake_install.cmake",
+		"/Users/akhilarya/UWMadisonAndF1/Projects/AetherMoE/AetherMoE/build/_deps/json-build/cmake_install.cmake"
+	],
+	"Parallel" : false
+}
