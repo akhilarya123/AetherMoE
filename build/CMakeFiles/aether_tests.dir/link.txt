@@ -1,1 +1,0 @@
-/usr/bin/c++ -O3 -DNDEBUG -arch x86_64 -Wl,-search_paths_first -Wl,-headerpad_max_install_names CMakeFiles/aether_tests.dir/tests/test_ring_buffer.cpp.o CMakeFiles/aether_tests.dir/tests/test_page_table.cpp.o CMakeFiles/aether_tests.dir/tests/test_scheduler.cpp.o -o aether_tests  lib/libgtest_main.a lib/libgtest.a

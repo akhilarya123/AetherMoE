@@ -1,7 +1,0 @@
-# CMake generated Testfile for 
-# Source directory: /Users/akhilarya/UWMadisonAndF1/Projects/AetherMoE/AetherMoE/build-tsan/_deps/googletest-src/googlemock
-# Build directory: /Users/akhilarya/UWMadisonAndF1/Projects/AetherMoE/AetherMoE/build-tsan/_deps/googletest-build/googlemock
-# 
-# This file includes the relevant testing commands required for 
-# testing this directory and lists subdirectories to be tested as well.
-subdirs("../googletest")

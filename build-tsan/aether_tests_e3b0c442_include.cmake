@@ -1,5 +1,0 @@
-if(EXISTS "/Users/akhilarya/UWMadisonAndF1/Projects/AetherMoE/AetherMoE/build-tsan/aether_tests_e3b0c442_tests.cmake")
-  include("/Users/akhilarya/UWMadisonAndF1/Projects/AetherMoE/AetherMoE/build-tsan/aether_tests_e3b0c442_tests.cmake")
-else()
-  add_test(aether_tests_NOT_BUILT aether_tests_NOT_BUILT)
-endif()
