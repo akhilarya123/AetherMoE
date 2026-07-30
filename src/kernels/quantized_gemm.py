@@ -69,7 +69,9 @@ _KERNEL_SOURCE = r"""
 
     float acc = 0.0f;
     float s = scale[col];
-    const device float* x_row = x + row * D;
+    auto x_row = x + row * D;  // `auto`, not `const device float*` -- see the
+                                // identical fix + explanation in
+                                // fused_gating_metal.py's kernel source
     for (uint d = 0; d < D; ++d) {
         float w = float(q_weight[d * E + col]) * s;   // dequant AT MULTIPLY TIME
         acc += x_row[d] * w;

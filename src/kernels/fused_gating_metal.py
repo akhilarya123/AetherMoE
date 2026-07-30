@@ -106,7 +106,11 @@ _KERNEL_SOURCE = r"""
     uint E = num_experts[0];
     uint K = top_k[0];
 
-    const device float* row = hidden + token_id * D;
+    auto row = hidden + token_id * D;  // `auto`, not `const device float*` -- MLX
+                                        // places tiny buffers in the `constant`
+                                        // address space instead of `device` as an
+                                        // optimization, and hardcoding `device`
+                                        // only matched the larger-buffer case.
 
     // Each SIMD group owns one expert at a time, looping if E > number of
     // resident SIMD groups. Different SIMD groups write different logits[e]
