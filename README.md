@@ -9,7 +9,7 @@ A from-scratch, $0, M1-Mac-only MoE inference engine, built milestone by milesto
 | Milestone | Status |
 |---|---|
 | **1 — Foundation & core engine loop** (C++ ingress/scheduler/paging) | **Done, verified on your Mac.** 18/18 tests pass, clean under ThreadSanitizer, 10,130 req/s on the load test (target was 10,000+), zero errors, zero drops. |
-| **2 — Fused MoE kernels** (MLX/Metal gating + quantized GEMM) | **Correctness fully verified on your Mac — 25/25 tests pass.** Three real bugs found and fixed along the way (below). **Performance not yet acceptable** — fused kernel is currently ~2.4-3x slower than the unfused reference; that's the active open item. |
+| **2 — Fused MoE kernels** (MLX/Metal gating + quantized GEMM) | **Correctness fully verified — 25/25 tests pass.** Performance meaningfully improved on both kernels (gating: ~2.4-3x slower than reference → ~1.7-2.2x; quantized GEMM: ~2.4-3.1x → ~1.1-2.8x depending on scale) but doesn't reliably clear the 1.5x threshold. Root cause is understood and evidenced via Instruments (Apple hardware matrix-multiply throughput ceiling, not overhead or memory access). Explicitly decided to stop tuning and move on rather than attempt a much larger `simdgroup_matrix` rewrite. Full story: [`MILESTONE2_PERF_EVIDENCE.md`](./MILESTONE2_PERF_EVIDENCE.md). |
 | 3 — Simulated multi-node orchestration | Not started |
 | 4 — Production hardening | Not started |
 
@@ -84,14 +84,21 @@ tests/python/test_gating_property.py   7/7   (Hypothesis + explicit edge cases)
 tests/python/test_quantized_gemm.py    6/6
 ```
 
-**Performance — the current open problem:**
+**Performance — meaningfully improved, decided to stop tuning here:**
 ```
 n_tokens=256  d_model=1024  num_experts=16  k=4
-reference (unfused): ~350-410 us/call
-fused kernel:         ~830-1240 us/call
-=> fused is currently ~2.4-3x SLOWER than the unfused MLX reference
+Gating kernel:      handover baseline ~2.4-3.0x slower -> now ~1.7-2.2x slower
+Quantized GEMM:     v1 ~2.4-3.1x slower              -> now ~1.1-2.8x slower (scale-dependent)
 ```
-This is real, measured, and not yet solved. The fused kernel's design (SIMD-group-per-expert with `simd_sum` reduction) was meant to fix a *different*, earlier performance problem (an even-slower fully-serial per-thread dot product), but it hasn't beaten the reference yet. This is the next thing to dig into once correctness is fully reconfirmed — likely candidates, not yet confirmed: the fixed 256-thread dispatch may be oversized/wasteful for small shapes; the single-thread top-k+softmax tail may cost more than expected relative to a cheap projection; MLX's built-in matmul is simply very well-tuned and genuinely hard to beat with a hand-written kernel at these sizes. We'll chase this with real profiling data, not more guessing.
+Root cause for the remaining gap is confirmed via Instruments (Metal System
+Trace), not guessed: hand-written kernels using scalar SIMD-group arithmetic
+can't match Apple Silicon's dedicated matrix-multiply hardware path that
+MLX's built-in matmul uses. Closing this further needs a `simdgroup_matrix`
+rewrite of both kernels — evaluated and explicitly deferred as a
+materially bigger undertaking than anything else in this milestone, after
+two rounds of narrower tuning showed diminishing, often noise-level
+returns. Full investigation, all real numbers, and the Instruments
+evidence: **[`MILESTONE2_PERF_EVIDENCE.md`](./MILESTONE2_PERF_EVIDENCE.md)**.
 
 ### How to run everything
 
@@ -129,18 +136,22 @@ python3.11 benchmarks/bench_gating.py --n-tokens 512 --d-model 4096 --num-expert
 python3.11 -m pytest tests/python/ -v
 ```
 
-### Status: correctness closed. Now: performance.
+### Status: correctness closed, performance investigated and documented, moving on
 
-All 25 tests pass. Every numerical/property/quantized test is green, the crash is fixed, and we're not going back to guessing on correctness — the next work is profiling and fixing the ~2.4-3x slowdown with real evidence (Instruments), not another blind kernel rewrite.
+All 25 tests pass. Performance was investigated thoroughly with real
+Instruments evidence (not guessing) — see
+[`MILESTONE2_PERF_EVIDENCE.md`](./MILESTONE2_PERF_EVIDENCE.md) for the full
+story, every real number, and the explicit decision to stop tuning in favor
+of Milestone 3.
 
 ### Known limitations of Milestone 2 (by design, not oversight)
 
 - No integration into the Milestone 1 C++ engine yet — deliberate, planned as a follow-up once the kernels are both correct *and* fast.
-- Quantized GEMM kernel is one-thread-per-output-element, not tiled/blocked — correct but not performance-competitive with MLX's built-in matmul at large sizes yet.
-- Instruments profiling hasn't happened yet — needs hands-on-keyboard time in Xcode; we'll do this together once the crash is confirmed fixed.
+- Neither kernel fully clears the spec's 1.5x performance threshold; the remaining gap is a well-evidenced hardware-matmul throughput ceiling, not overhead — see the evidence doc for what would actually close it (`simdgroup_matrix` rewrite, explicitly deferred).
+- Quantized GEMM kernel has no direct Instruments capture (gating does) — see `MILESTONE2_PERF_EVIDENCE.md` §2.4 for the specific gap and how to close it if needed.
 
 ---
 
 ## Next up
 
-Once Milestone 2's property tests are confirmed clean, we'll profile the performance gap with Instruments and fix it with real evidence. After that: Milestone 3 (simulated multi-node orchestration + async overlap).
+Milestone 3: simulated multi-node orchestration (OS processes standing in for GPU nodes) + async compute/transfer overlap. See `AetherMoEMacM1.md` §4 for full scope.
