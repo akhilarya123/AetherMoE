@@ -91,6 +91,7 @@ add_executable(aether_tests
     tests/test_ring_buffer.cpp
     tests/test_page_table.cpp
     tests/test_scheduler.cpp
+    tests/test_orchestration.cpp
 )
 target_link_libraries(aether_tests PRIVATE aether_core GTest::gtest_main Threads::Threads)
 target_include_directories(aether_tests PRIVATE ${CMAKE_SOURCE_DIR}/src)

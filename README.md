@@ -10,7 +10,7 @@ A from-scratch, $0, M1-Mac-only MoE inference engine, built milestone by milesto
 |---|---|
 | **1 — Foundation & core engine loop** (C++ ingress/scheduler/paging) | **Done, verified on your Mac.** 18/18 tests pass, clean under ThreadSanitizer, 10,130 req/s on the load test (target was 10,000+), zero errors, zero drops. |
 | **2 — Fused MoE kernels** (MLX/Metal gating + quantized GEMM) | **Correctness fully verified — 25/25 tests pass.** Performance meaningfully improved on both kernels (gating: ~2.4-3x slower than reference → ~1.7-2.2x; quantized GEMM: ~2.4-3.1x → ~1.1-2.8x depending on scale) but doesn't reliably clear the 1.5x threshold. Root cause is understood and evidenced via Instruments (Apple hardware matrix-multiply throughput ceiling, not overhead or memory access). Explicitly decided to stop tuning and move on rather than attempt a much larger `simdgroup_matrix` rewrite. Full story: [`MILESTONE2_PERF_EVIDENCE.md`](./MILESTONE2_PERF_EVIDENCE.md). |
-| 3 — Simulated multi-node orchestration | Not started |
+| **3 — Simulated multi-node orchestration** (transport/routing/capacity-ceiling/double-buffered Metal execution) | **Done, verified on your Mac.** 28/28 orchestration tests pass (real forked processes, real socket IPC). Capacity-ceiling overflow rerouting verified against an independent expected-assignment calculation. Fault-injection (`SIGKILL` a live worker mid-session) confirms detection without hanging — two real bugs found and fixed along the way. Double-buffered Metal execution confirmed via real Instruments GPU-execution-timeline data showing genuine compute/transfer overlap (163-389µs per pair). Full story: [`MILESTONE3_EVIDENCE.md`](./MILESTONE3_EVIDENCE.md). |
 | 4 — Production hardening | Not started |
 
 ---
@@ -152,6 +152,135 @@ of Milestone 3.
 
 ---
 
+## Milestone 3 — Simulated multi-node orchestration (done)
+
+**What's in it:**
+
+| Component | File |
+|---|---|
+| Transport interface (stands in for a real collective-comm library) | `src/orchestration/collective_transport.hpp` |
+| Unix-domain-socket transport — real IPC over real forked processes | `src/orchestration/unix_socket_transport.hpp` |
+| Token/result types | `src/orchestration/routed_token.hpp` |
+| Binary message framing | `src/orchestration/serialization.hpp` |
+| Worker-side processing loop | `src/orchestration/worker_shard.hpp` |
+| Process spawning (real `fork()`, real `socketpair()`) | `src/orchestration/process_spawn.hpp` |
+| **Router** — scatter/gather + capacity-ceiling overflow rerouting | `src/orchestration/router.hpp` |
+| Double-buffered Metal execution demo (Objective-C++, standalone) | `tools/double_buffer_demo.mm` |
+| Tests | `tests/test_orchestration.cpp` |
+
+### The story so far (worth knowing, not just the end state)
+
+Unlike Milestone 2, most of this milestone is pure C++/POSIX — no GPU
+involved for the transport/routing layer, so I could compile and run it
+myself with real forked processes and real socket IPC before any of it
+reached you, the same way Milestone 1 worked. One real environment
+constraint first: my sandbox has no network access, so I couldn't use the
+project's actual CMake/GTest FetchContent setup directly — I self-verified
+with my own dependency-free harness (real forks, real IPC, ASan/UBSan),
+then handed off the real GTest-based test file for your actual build.
+
+**Phase A (transport + scatter/gather) and Phase B (expert-capacity
+ceiling)** went cleanly — built, self-verified extensively, confirmed
+passing on your Mac with no back-and-forth needed, unlike Milestone 2's
+kernels.
+
+**Fault injection** (killing a worker mid-session with real `SIGKILL`,
+confirming the router detects it rather than hanging — detection only;
+full recovery is explicitly Milestone 4's job per spec) surfaced two real,
+distinct bugs, found by the test itself, not anticipated in advance:
+
+1. **`SIGPIPE` killed the whole process** before any C++ exception-handling
+   code could run — writing to a socket whose peer just died raises
+   `SIGPIPE`, and its default disposition terminates the process outright.
+   Fixed with `signal(SIGPIPE, SIG_IGN)` in `UnixSocketTransport`'s
+   constructor. Deliberately *not* Linux's `MSG_NOSIGNAL` shortcut, since
+   it doesn't exist on macOS — this project's actual target platform,
+   which I can't test directly, so the portable POSIX-standard fix was the
+   right call here.
+2. **A worker's exception handling was too narrow** — `run_worker_loop`
+   only treated a clean peer-close as the shutdown signal; a genuine
+   connection-reset (a plain exception, not the specific "clean close"
+   type) could escape the loop entirely. Broadened to treat any transport
+   error as "the router is gone, shut down," plus a defensive
+   `try/catch(...)` around the worker callback in `spawn_workers()` so no
+   exception can ever silently escape a forked child regardless of what
+   the callback does.
+
+**Phase C (double-buffered Metal execution)** is the one part of this
+milestone I genuinely could not test myself at all — no Apple Silicon, no
+Metal framework, no `clang` even, anywhere in my sandbox. Written entirely
+from documented Metal API knowledge, then verified end-to-end on your Mac:
+correctness first (output checked against a CPU-computed reference, passed
+at both 4MB and 128MB per slice), then the actual overlap question via
+Instruments. One methodology correction along the way worth remembering:
+an early pass at the Instruments data used the wrong table
+(`metal-application-encoders-list`, which measures CPU-side command
+*encoding* order — inherently sequential regardless of real GPU overlap,
+since one CPU thread encodes commands one after another by definition) and
+looked like a genuine negative result. Only `metal-gpu-intervals` (the
+actual GPU execution timeline) revealed the real answer.
+
+**Verified passing on your Mac — 28/28:**
+```
+tests/test_orchestration.cpp
+  EmptyBatchDoesNotHang
+  SingleShardRoutesAllTokensCorrectly
+  MultiShardScattersAndReassemblesInOrder
+  MultipleBatchesThroughSameWorkers
+  SkewedDistributionStillReassemblesCorrectly
+  CapacityCeilingDefaultIsUnlimited_NoBehaviorChange
+  OverflowReroutesToSecondaryExpert_ExactAssignmentMatch
+  LoadImbalanceStressTest_NoStall
+  KilledWorkerIsDetectedNotHung
+  RandomizedShapesRepeatedRuns
+```
+
+**Double-buffering overlap — real Instruments GPU-execution-timeline data,
+not assumed:**
+```
+compute[1] vs transfer[2]:  389us overlap  (transfer started  7.8us after compute began)
+compute[2] vs transfer[3]:  244us overlap  (transfer started  8.0us after compute began)
+compute[3] vs transfer[4]:  256us overlap  (transfer started  7.7us after compute began)
+compute[4] vs transfer[5]:  195us overlap  (transfer started  9.8us after compute began)
+compute[5] vs transfer[6]:  164us overlap  (transfer started 35.4us after compute began)
+compute[6] vs transfer[7]:  199us overlap  (transfer started  6.5us after compute began)
+```
+Full investigation, every real number, and the Instruments methodology
+correction: **[`MILESTONE3_EVIDENCE.md`](./MILESTONE3_EVIDENCE.md)**.
+
+### How to run everything
+
+```bash
+cmake --build build -j$(sysctl -n hw.ncpu)
+./build/aether_tests
+```
+
+```bash
+# Double-buffering demo (standalone, not part of the CMake build yet)
+clang++ -std=c++17 -fobjc-arc -framework Metal -framework Foundation \
+    tools/double_buffer_demo.mm -o double_buffer_demo
+./double_buffer_demo                 # default 4MB/slice
+./double_buffer_demo 33554432         # 128MB/slice -- this is the shape overlap was confirmed at
+```
+
+### Status: done, all phases evidenced
+
+All 28 orchestration tests pass. Fault detection and double-buffering
+overlap are both confirmed with real data, not assumptions — see
+[`MILESTONE3_EVIDENCE.md`](./MILESTONE3_EVIDENCE.md) for the full story.
+
+### Known limitations of Milestone 3 (by design, not oversight)
+
+- Fault injection proves *detection* only — graceful degradation/recovery
+  after a node failure is explicitly Milestone 4's job per spec.
+- Capacity-ceiling overflow is a single hop (primary → secondary expert
+  only) — no cascading rerouting if the secondary is also over capacity;
+  the spec asks for one hop, not a general rebalancer.
+- `double_buffer_demo` is a standalone tool, not yet integrated into the
+  main CMake build or the Milestone 1 engine.
+
+---
+
 ## Next up
 
-Milestone 3: simulated multi-node orchestration (OS processes standing in for GPU nodes) + async compute/transfer overlap. See `AetherMoEMacM1.md` §4 for full scope.
+Milestone 4: telemetry, benchmarking suite, and chaos/fault-tolerance testing (the full recovery layer — Milestone 3 only proved fault *detection*). See `AetherMoEMacM1.md` §4 for full scope.

@@ -7,3 +7,4 @@ src/kernels/__pycache__/
 prototype/__pycache__/
 build/
 build-tsan/
+double_buffer_demo
