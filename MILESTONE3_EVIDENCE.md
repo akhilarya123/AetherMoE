@@ -28,7 +28,7 @@ independently-reimplemented expected-assignment calculation (not just the
 router checking its own logic), plus a load-imbalance stress test with a
 wall-clock no-stall bound. Confirmed passing on the real Mac build.
 
-## Fault injection (detection only — full recovery is explicitly Milestone 4's job per spec)
+## Phase D — Fault injection (detection only — full recovery is explicitly Milestone 4's job per spec)
 
 `KilledWorkerIsDetectedNotHung` test: real `SIGKILL` sent to a live worker
 process mid-session, confirms the router detects the failure (throws)
@@ -46,6 +46,11 @@ via this test, both worth knowing about:
    shut down", plus a defensive `try/catch(...)` around the worker
    callback in `spawn_workers()` so no exception can silently escape a
    forked child regardless of what the callback does.
+
+**Note on section ordering:** Phase D (fault injection) was actually built
+chronologically BEFORE Phase C (Metal double-buffering) — sections here
+are ordered A/B/C/D for clarity on re-read, not development order. All
+four are complete either way.
 
 ## Phase C — Double-buffered Metal execution (`tools/double_buffer_demo.mm`)
 

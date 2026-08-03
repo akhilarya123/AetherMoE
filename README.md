@@ -184,7 +184,7 @@ ceiling)** went cleanly — built, self-verified extensively, confirmed
 passing on your Mac with no back-and-forth needed, unlike Milestone 2's
 kernels.
 
-**Fault injection** (killing a worker mid-session with real `SIGKILL`,
+**Fault injection (Phase D)** (killing a worker mid-session with real `SIGKILL`,
 confirming the router detects it rather than hanging — detection only;
 full recovery is explicitly Milestone 4's job per spec) surfaced two real,
 distinct bugs, found by the test itself, not anticipated in advance:
