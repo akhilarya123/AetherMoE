@@ -93,6 +93,7 @@ add_executable(aether_tests
     tests/test_scheduler.cpp
     tests/test_orchestration.cpp
     tests/test_telemetry.cpp
+    tests/test_chaos.cpp
 )
 target_link_libraries(aether_tests PRIVATE aether_core GTest::gtest_main Threads::Threads)
 target_include_directories(aether_tests PRIVATE ${CMAKE_SOURCE_DIR}/src)

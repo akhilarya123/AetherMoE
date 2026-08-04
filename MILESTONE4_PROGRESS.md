@@ -1,10 +1,150 @@
 # Milestone 4 — Progress notes (Step 1 of 4)
 
-Following the phasing suggested in `HANDOVER_MILESTONE4.md` §7: Step 1
-(telemetry) is built and self-verified as far as this sandbox allows.
-Steps 2–4 (chaos-testing layer, benchmarking CLI, end-to-end regression
-suite) are not started yet — picking those up next, one at a time, after
-Step 1 is confirmed on real hardware.
+## 0. Step 1 status: CONFIRMED on real hardware
+
+Ran on the actual M1 Mac (not the Linux sandbox proxy from earlier):
+
+```
+38 tests from 5 test suites ran. [ PASSED ] 38 tests.  (10 new TelemetryTest cases, all green)
+
+telemetry disabled: median 120.59 ms
+telemetry enabled:  median 121.48 ms
+overhead: 0.738%  (target: <1%)
+RESULT: PASS
+```
+
+The 2.45% figure from the Linux sandbox in §3 below was, as flagged at the
+time, a proxy measurement that didn't hold on the real target hardware —
+clock-read/CAS cost evidently differ enough between the two that it
+mattered. No fix was needed; keeping §3 below as-written for the record
+rather than editing it away, since the caveat about not trusting the
+sandbox number turned out to be the right call.
+
+**Step 1 (telemetry) is done.** Step 2 (chaos-testing layer) starts below.
+
+---
+
+## Step 2: Chaos-testing layer
+
+**Same sandbox constraints as Step 1** — no network, so `tests/test_chaos.cpp`
+(GTest) is written but **not compiled by me**; I self-verified the
+underlying logic with a dependency-free plain-`assert` harness first,
+same discipline as Step 1 and as Milestone 3 before it.
+
+### What's built
+
+**`src/orchestration/chaos.hpp`** (new) — two independent tools, matching
+the M4 spec's testing-plan item:
+- **`DelayInjectingTransport`** — a decorator over `ICollectiveTransport`
+  that sleeps a configurable duration before `send()`/`receive()`. Reuses
+  the interface abstraction exactly as `collective_transport.hpp`'s own
+  header comment intends: `Router` only ever holds an
+  `ICollectiveTransport*`, so substituting a delay-injecting wrapper for
+  one shard's entry needs zero changes to `Router` or
+  `UnixSocketTransport`.
+- **`ChaosScript`** — schedules a real `SIGKILL` of a real worker process
+  at a random point within a time window, on a background thread, while
+  the caller keeps driving traffic on its own thread. This is Milestone
+  3's `KilledWorkerIsDetectedNotHung` test (kill *before* traffic starts)
+  generalized to kill *during* active traffic, which is what the spec's
+  "at random points during active traffic" phrase actually requires.
+
+**`src/orchestration/process_spawn.hpp`** (edited, additive) — added a
+`shard_pids` map to `SpawnedWorkers` (`shard_id -> pid`) so chaos code can
+target "kill shard 2" without the caller separately tracking which index
+into `child_pids` belongs to which shard.
+
+**`src/orchestration/routed_token.hpp`** (edited, additive) — added
+`failed` and `failure_reason` fields to `RoutedResult`, following the
+exact same convention as the existing `effective_expert` field
+(router-only bookkeeping, defaulted, never sent over the wire).
+
+**`src/orchestration/router.hpp`** (edited, additive) — new
+`route_batch_tolerant()` method plus `is_shard_unhealthy()` /
+`unhealthy_shard_count()`. **`route_batch()` itself is completely
+untouched** — Milestone 3's own test depends on it still throwing on a
+dead shard, and that contract stays exactly as-is. `route_batch_tolerant`
+is the new graceful-degradation path: every token gets exactly one
+`RoutedResult` back — a real result, or `failed=true` with a reason —
+never a throw, never a silently missing `batch_position`. A shard that
+fails once is remembered so later calls skip re-attempting a socket
+that's already known dead, and healthy shards in the same batch are
+unaffected.
+
+**`tests/test_chaos.cpp`** (new, GTest, **unverified by me**) — 6 tests:
+`shard_pids` correctness, delay-injection latency (both nonzero and the
+zero-delay no-op case), tolerant-routing matching strict routing on a
+healthy cluster, tolerant routing isolating a dead shard without
+throwing/hanging (including a third batch proving the isolation actually
+skips re-attempting the dead shard, not just detects it once), and the
+main scripted-kill-during-active-traffic test.
+
+### Self-verified in this sandbox
+
+Reproduced all 6 tests as a plain-`assert` harness against real forked
+worker processes and a real background `SIGKILL` thread:
+
+- **Delay injection**: an 80ms send-delay + 80ms receive-delay wrapper
+  measured a real ≥150ms round trip (target 160ms accounting for
+  scheduling slack) — the delay is real, not a no-op.
+- **Tolerant routing on a healthy cluster**: byte-for-byte matches strict
+  `route_batch`'s results, `failed=false` everywhere, zero shards marked
+  unhealthy.
+- **Chaos during active traffic** (the main scenario): killed shard 1 at
+  a random point within the first 150ms while sending 40 batches of 200
+  tokens each (8,000 tokens total, spanning ~450ms of wall time) on the
+  main thread concurrently. Every run: **all 8,000 tokens accounted for**
+  (`succeeded + failed == sent`, exactly, every time), the victim shard
+  correctly detected and marked unhealthy, and — critically — the three
+  surviving shards kept serving successful results the *entire* run, not
+  just before the kill.
+- Ran this 3x under `-fsanitize=address,undefined` and 3x under
+  `-fsanitize=thread`: clean, deterministic invariants every time
+  (`8000 sent / ~6440 succeeded / ~1560 failed` in the TSan/plain runs —
+  small run-to-run variance in the exact split is expected and fine, since
+  it depends on exactly when within the random window the kill lands
+  relative to in-flight batches; the *invariant* that succeeded+failed
+  always equals sent held in every single run).
+- Confirmed the untouched `route_batch()` (strict) still throws on a dead
+  shard exactly as Milestone 3's test expects — full regression check
+  against the edited `router.hpp`/`routed_token.hpp`/`process_spawn.hpp`.
+
+**One sandbox-only artifact worth flagging, not a real bug:** running the
+harness under ThreadSanitizer specifically (not ASan/UBSan, not plain)
+produced duplicated stdout lines — buffered-but-unflushed `std::cout`
+output getting copied into forked child processes and echoed again, a
+known category of `fork()` + buffered-stdio + sanitizer-runtime
+interaction, same flavor as the TSan+UBSan `pipe()` false-positive
+flagged in Step 1's notes. All assertions still passed correctly every
+single time; only the diagnostic printing was affected, not any actual
+process/router/chaos behavior. Real GTest binaries don't buffer output
+the same way `std::cout`-in-a-loop does, so this is very unlikely to
+reproduce in your actual test run — flagging it here so it isn't a
+surprise if it ever does.
+
+### What to run and report back
+
+```bash
+cmake -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j$(sysctl -n hw.ncpu)
+
+./build/aether_tests   # now includes 6 new Chaos.* tests alongside
+                        # the 38 from Step 1
+```
+
+Please paste back the exact GTest output again — this one has real timing
+assertions (`EXPECT_LT`/`EXPECT_GE` on wall-clock milliseconds) that could
+in principle be tighter or looser than your machine needs; if anything is
+flaky or fails, the exact numbers matter for tuning the bounds rather than
+guessing at them.
+
+Once this is confirmed, remaining per the phasing in
+`HANDOVER_MILESTONE4.md` §7: Step 3 (benchmarking CLI: Poisson synthetic
+traffic generator, TTFT/inter-token/throughput reporting via the telemetry
+subsystem from Step 1) and Step 4 (end-to-end regression suite tying
+Milestones 1–4 together).
+
+
 
 **Sandbox constraints this round (same shape as every prior milestone,
 see `HANDOVER_MILESTONE4.md` §2):** this environment has a working `g++`

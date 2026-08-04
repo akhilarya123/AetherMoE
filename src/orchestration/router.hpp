@@ -33,6 +33,7 @@
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "collective_transport.hpp"
@@ -97,6 +98,146 @@ public:
         }
         return ordered;
     }
+
+    // ===================== Milestone 4: graceful degradation =====================
+    //
+    // route_batch (above) is deliberately left untouched -- Milestone 3's
+    // KilledWorkerIsDetectedNotHung test depends on a single dead shard
+    // throwing all the way out of that call, and that's still the right
+    // contract for a caller that wants "fail the whole batch loudly."
+    //
+    // This method is for a caller that instead wants the control plane to
+    // keep running through a node failure (the M4 spec's actual ask):
+    // every token gets exactly one RoutedResult back -- either a genuine
+    // result, or `failed == true` with a reason -- never a throw, and
+    // never a silently missing batch_position. A shard that fails once is
+    // remembered via `is_shard_unhealthy()` so later calls in the same
+    // Router's lifetime don't keep paying the cost (and the latency) of
+    // talking to a socket that's already known to be gone, and healthy
+    // shards in the SAME batch are unaffected by another shard's failure.
+    //
+    // Deliberately NOT built: any reconnection/backoff/retry policy for an
+    // unhealthy shard. The spec asks for isolating a fault so the rest of
+    // the cluster keeps serving traffic, not a general node-recovery
+    // system -- adding one here would be solving a problem the spec
+    // doesn't pose, the same judgment call this file's header comment
+    // already makes about cascading overflow. A caller that needs a shard
+    // back after a restart constructs a fresh Router (or a future,
+    // separately-designed hook clears unhealthy_shards_ explicitly).
+    std::vector<RoutedResult> route_batch_tolerant(const std::vector<RoutedToken>& tokens) {
+        std::vector<uint32_t> effective_expert(tokens.size());
+        assign_effective_experts(tokens, effective_expert);
+
+        std::unordered_map<uint32_t, std::vector<size_t>> indices_by_shard;
+        for (size_t i = 0; i < tokens.size(); ++i) {
+            indices_by_shard[shard_for_expert(effective_expert[i])].push_back(i);
+        }
+
+        std::vector<RoutedResult> ordered(tokens.size());
+        std::vector<bool> filled(tokens.size(), false);
+
+        // Every token in a failed/unhealthy group gets an explicit,
+        // accounted-for failure result instead of being left as a missing
+        // position -- this closure is the one place that invariant is
+        // enforced, so every failure path below routes through it.
+        auto fail_group = [&](const std::vector<size_t>& idxs, const std::string& reason) {
+            for (size_t i : idxs) {
+                RoutedResult r;
+                r.token_id = tokens[i].token_id;
+                r.batch_position = tokens[i].batch_position;
+                r.effective_expert = effective_expert[i];
+                r.failed = true;
+                r.failure_reason = reason;
+                ordered[r.batch_position] = std::move(r);
+                filled[r.batch_position] = true;
+            }
+        };
+
+        for (auto& [shard_id, idxs] : indices_by_shard) {
+            if (unhealthy_shards_.count(shard_id)) {
+                fail_group(idxs, "shard " + std::to_string(shard_id) +
+                                      " marked unhealthy from a previous failure "
+                                      "in this Router's lifetime");
+                continue;
+            }
+
+            std::vector<RoutedToken> group;
+            group.reserve(idxs.size());
+            for (size_t i : idxs) group.push_back(tokens[i]);
+
+            std::vector<RoutedResult> shard_results;
+            bool ok = true;
+            std::string reason;
+            try {
+                transport_for_shard(shard_id).send(encode_token_batch(group));
+                auto raw = transport_for_shard(shard_id).receive();
+                shard_results = decode_result_batch(raw);
+            } catch (const std::exception& e) {
+                ok = false;
+                reason = e.what();
+            } catch (...) {
+                ok = false;
+                reason = "unknown error communicating with shard " + std::to_string(shard_id);
+            }
+
+            if (!ok) {
+                unhealthy_shards_.insert(shard_id);
+                fail_group(idxs, reason);
+                continue;
+            }
+
+            // Map results this shard actually returned back onto their
+            // batch positions, carrying over this shard's per-token
+            // effective_expert decision (looked up by batch_position,
+            // since `ordered`/results are indexed by batch_position while
+            // `effective_expert` is indexed by original-vector position --
+            // conflating the two here was the actual bug caught while
+            // self-testing this method, see MILESTONE4_PROGRESS.md).
+            std::unordered_map<uint32_t, uint32_t> pos_to_effective;
+            for (size_t i : idxs) pos_to_effective[tokens[i].batch_position] = effective_expert[i];
+
+            for (auto& r : shard_results) {
+                if (r.batch_position < filled.size() && !filled[r.batch_position]) {
+                    auto eff_it = pos_to_effective.find(r.batch_position);
+                    if (eff_it != pos_to_effective.end()) r.effective_expert = eff_it->second;
+                    ordered[r.batch_position] = std::move(r);
+                    filled[r.batch_position] = true;
+                }
+            }
+            // Anything this shard was supposed to answer but didn't (a
+            // partial/short response, not a hard transport exception) is
+            // still marked failed rather than left as a missing position
+            // -- same "accounted for, never silently dropped" contract as
+            // every other path through this method.
+            for (size_t i : idxs) {
+                if (!filled[tokens[i].batch_position]) {
+                    RoutedResult r;
+                    r.token_id = tokens[i].token_id;
+                    r.batch_position = tokens[i].batch_position;
+                    r.effective_expert = effective_expert[i];
+                    r.failed = true;
+                    r.failure_reason = "missing result from shard " + std::to_string(shard_id);
+                    ordered[r.batch_position] = std::move(r);
+                    filled[r.batch_position] = true;
+                }
+            }
+        }
+        // Every position was touched by exactly one of the paths above
+        // (a shard's success/failure, or the pre-known-unhealthy check),
+        // since indices_by_shard partitions every input token exactly
+        // once -- so `filled` is guaranteed all-true here. effective_expert
+        // was already set correctly at each assignment site above (keyed
+        // by batch_position, not blindly re-applied here by input-vector
+        // index -- see the comment above about why that distinction
+        // matters).
+        return ordered;
+    }
+
+    bool is_shard_unhealthy(uint32_t shard_id) const {
+        return unhealthy_shards_.count(shard_id) != 0;
+    }
+
+    size_t unhealthy_shard_count() const { return unhealthy_shards_.size(); }
 
 private:
     // Phase B: determines which expert each token is ACTUALLY assigned to
@@ -174,6 +315,10 @@ private:
     std::unordered_map<uint32_t, uint32_t> expert_to_shard_;
     std::unordered_map<uint32_t, ICollectiveTransport*> shard_transports_;
     RouterConfig config_;
+    // Milestone 4: shards route_batch_tolerant has seen fail at least once.
+    // NOT touched by route_batch -- that method's contract (throw on any
+    // failure) is unaffected by this state entirely.
+    std::unordered_set<uint32_t> unhealthy_shards_;
 };
 
 }

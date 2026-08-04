@@ -40,6 +40,13 @@ struct SpawnedWorkers {
     std::unordered_map<uint32_t, std::unique_ptr<UnixSocketTransport>> transports;
     std::vector<pid_t> child_pids;
 
+    // Milestone 4: shard_id -> pid, so chaos-testing code can target "kill
+    // shard 2" without the caller needing to separately track which index
+    // into child_pids corresponds to which shard_id (they're parallel to
+    // shard_ids as passed to spawn_workers, but making that the caller's
+    // problem to remember is exactly the kind of footgun this map avoids).
+    std::unordered_map<uint32_t, pid_t> shard_pids;
+
     // Waits for every child to exit (call after the router side has closed
     // its transports, which signals each worker to shut down via
     // PeerClosedError -- see worker_shard.hpp). Returns exit statuses.
@@ -116,6 +123,7 @@ inline SpawnedWorkers spawn_workers(
         }
         // Parent: record the child, keep going.
         result.child_pids.push_back(pid);
+        result.shard_pids[shard_ids[i]] = pid;
     }
 
     // Phase 3 (parent only): close every worker_fd (not ours), wrap every

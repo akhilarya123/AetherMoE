@@ -16,6 +16,7 @@
 #pragma once
 
 #include <cstdint>
+#include <string>
 #include <vector>
 
 namespace aether::orchestration {
@@ -59,6 +60,16 @@ struct RoutedResult {
     // on any RoutedResult that hasn't gone through Router::route_batch yet.
     uint32_t effective_expert = 0;
     std::vector<float> payload;
+
+    // Milestone 4: filled in by Router::route_batch_tolerant (never by
+    // route_batch, and never sent over the wire -- same convention as
+    // effective_expert above) when this token's shard failed instead of
+    // returning a result. This is what makes "cleanly failed, never
+    // silently dropped" checkable by a test: every RoutedResult in a
+    // tolerant-mode batch is either a real result (failed == false) or an
+    // accounted-for failure with a reason, there's no third, missing case.
+    bool failed = false;
+    std::string failure_reason;
 };
 
 }
