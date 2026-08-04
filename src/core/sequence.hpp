@@ -15,6 +15,7 @@
 
 #pragma once
 
+#include <chrono>
 #include <cstdint>
 #include <stdexcept>
 #include <string>
@@ -55,6 +56,20 @@ struct Sequence {
 
     // Physical block ids owned by this sequence in the page table.
     std::vector<int> owned_blocks;
+
+    // Milestone 4: timestamps the scheduler uses to record TTFT and
+    // inter-token latency (see telemetry.hpp). `admitted_at` is set at
+    // construction time, which in practice is ingress-arrival time (see
+    // main.cpp: a Sequence is constructed right when the HTTP request is
+    // parsed, before it ever reaches the ring buffer or scheduler) --
+    // that's the right start point for TTFT, not "whenever the scheduler
+    // happens to first look at it." `last_decode_at` has no valid value
+    // until the first decode step actually runs; that first step records
+    // TTFT instead of an inter-token delta (see scheduler.hpp), so reading
+    // an unset `last_decode_at` before that never happens.
+    std::chrono::steady_clock::time_point admitted_at =
+        std::chrono::steady_clock::now();
+    std::chrono::steady_clock::time_point last_decode_at{};
 
     explicit Sequence(uint64_t seq_id, std::vector<uint32_t> prompt,
                        uint32_t max_new)

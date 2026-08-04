@@ -14,9 +14,19 @@
 // and phase transitions. A real "run the model on this batch" call is a
 // pluggable callback so this scheduler is testable in isolation without a
 // GPU, and Milestone 2's kernels slot in later without touching this file.
+//
+// Milestone 4 addition: every decode step now records a telemetry sample
+// (TTFT for a sequence's first generated token, inter-token latency for
+// every one after) via TelemetryRecorder -- see telemetry.hpp for why this
+// is safe to leave permanently enabled on the hot path (one relaxed atomic
+// load, one lock-free push, no allocation). This is purely observational:
+// it does not change any StepResult, any Sequence field the rest of the
+// engine reads, or step()'s control flow, so Milestone 1's own tests
+// continue to pass unchanged with this instrumentation active.
 
 #pragma once
 
+#include <chrono>
 #include <cstdint>
 #include <deque>
 #include <functional>
@@ -26,6 +36,7 @@
 
 #include "page_table.hpp"
 #include "sequence.hpp"
+#include "telemetry.hpp"
 
 namespace aether::core {
 
@@ -76,6 +87,22 @@ public:
                     ++it;  // OOM this iteration; try again next iteration
                     continue;
                 }
+                // Milestone 4: record TTFT on the very FIRST generated
+                // token for this sequence, inter-token latency on every
+                // one after that -- see the field comments in
+                // sequence.hpp for why admitted_at/last_decode_at are
+                // always valid by the time we get here. Recording happens
+                // before the push_back below on purpose: "now" should
+                // reflect the moment this token becomes available, and
+                // the push_back/budget bookkeeping that follows is not
+                // part of what's being timed.
+                auto now = std::chrono::steady_clock::now();
+                if (seq->generated_tokens.empty()) {
+                    TelemetryRecorder::record_ttft(seq->id, now - seq->admitted_at);
+                } else {
+                    TelemetryRecorder::record_inter_token(seq->id, now - seq->last_decode_at);
+                }
+                seq->last_decode_at = now;
                 seq->generated_tokens.push_back(kPlaceholderToken);
                 budget -= 1;
                 bool finished = seq->generated_tokens.size() >= seq->max_new_tokens;

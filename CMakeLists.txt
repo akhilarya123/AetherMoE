@@ -92,6 +92,7 @@ add_executable(aether_tests
     tests/test_page_table.cpp
     tests/test_scheduler.cpp
     tests/test_orchestration.cpp
+    tests/test_telemetry.cpp
 )
 target_link_libraries(aether_tests PRIVATE aether_core GTest::gtest_main Threads::Threads)
 target_include_directories(aether_tests PRIVATE ${CMAKE_SOURCE_DIR}/src)
@@ -105,3 +106,13 @@ gtest_discover_tests(aether_tests)
 # ---------------------------------------------------------------------------
 add_executable(load_generator benchmarks/load_generator.cpp)
 target_link_libraries(load_generator PRIVATE aether_core httplib::httplib nlohmann_json::nlohmann_json Threads::Threads)
+
+# ---------------------------------------------------------------------------
+# Milestone 4, Step 1: telemetry overhead A/B benchmark (enabled vs
+# disabled throughput comparison, per the M4 testing plan's <1% budget).
+# Standalone, no HTTP/httplib dependency needed -- it drives the scheduler
+# directly with a synthetic workload, same pattern as the M2 Python
+# benchmark scripts but in C++ since telemetry itself is C++.
+# ---------------------------------------------------------------------------
+add_executable(bench_telemetry_overhead benchmarks/bench_telemetry_overhead.cpp)
+target_link_libraries(bench_telemetry_overhead PRIVATE aether_core Threads::Threads)
