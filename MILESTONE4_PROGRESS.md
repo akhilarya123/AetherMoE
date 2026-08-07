@@ -139,10 +139,246 @@ flaky or fails, the exact numbers matter for tuning the bounds rather than
 guessing at them.
 
 Once this is confirmed, remaining per the phasing in
-`HANDOVER_MILESTONE4.md` §7: Step 3 (benchmarking CLI: Poisson synthetic
-traffic generator, TTFT/inter-token/throughput reporting via the telemetry
-subsystem from Step 1) and Step 4 (end-to-end regression suite tying
-Milestones 1–4 together).
+`HANDOVER_MILESTONE4.md` §7: Step 3 (benchmarking CLI) — done below —
+and Step 4 (end-to-end regression suite tying Milestones 1–4 together).
+
+---
+
+## Step 3: Benchmarking CLI
+
+**`benchmarks/bench_cli.cpp`** (new) — drives the same architecture
+`main.cpp` uses (a Poisson-arrival producer pushing onto the real
+`aether::api::IngressQueue`, a separate engine thread draining it and
+calling `scheduler.step()`), deliberately in-process rather than over real
+HTTP — see the file's header comment for why: `main.cpp`'s `/generate` is
+admission-only (returns immediately), so an HTTP-level timer can only ever
+measure admission latency, not TTFT/inter-token latency, which is the
+whole reason Step 1's telemetry instrumentation exists. `load_generator.cpp`
+(Milestone 1) remains the tool for exercising the real HTTP ingress path;
+this one is for the actual P50/P95/P99 numbers the spec's Definition of
+Done asks for.
+
+- **Poisson arrivals**: inter-arrival times drawn from
+  `std::exponential_distribution`, paced against real `steady_clock` time
+  (not a simulated/virtual clock) — "multi-hour run" is taken literally,
+  since the whole point of a multi-hour run is catching real time-based
+  degradation a virtual clock couldn't expose.
+- **Mixed short/long lengths**: 85% short (10–200 prompt tokens, 1–32
+  generated), 15% long (500–2,000 prompt tokens, 32–256 generated) by
+  default, configurable via `--long-fraction`.
+- **Reports**: admitted/completed/rejected/in-flight-at-cutoff counts,
+  tokens/sec, requests/sec, and TTFT + inter-token P50/P95/P99 straight
+  from Step 1's `TelemetryFlusher::snapshot()` — to a CSV
+  (`--output PREFIX` → `PREFIX_summary.csv`), one row per `--repeat`.
+- **`benchmarks/plot_benchmark.py`** (new) — reads that CSV and produces
+  three PNG charts (latency percentiles across runs, throughput across
+  runs, backpressure/telemetry-drop accounting) via matplotlib, plus a
+  `--consistency` mode that flags any metric whose run-to-run coefficient
+  of variation exceeds 25% — the testing plan's explicit "checked for
+  run-to-run consistency" ask, made into an actual pass/fail check rather
+  than an eyeballed chart.
+- **`requirements-m4.txt`** (new) — `pandas`, `matplotlib`, matching the
+  Milestone 2 requirements-file convention.
+- **`CMakeLists.txt`** — new `bench_cli` executable target.
+
+### Self-verified in this sandbox
+
+Ran `bench_cli` directly (real runs, real numbers) across a range of
+rates, and ran `plot_benchmark.py` against the real CSVs it produced —
+including visually inspecting the rendered PNGs, not just checking they
+exist:
+
+```
+--duration 5  --rate 50   (x2 repeats): 262/248 completed, 0 rejected, 0 telemetry drops
+                                          TTFT p50 ~555µs, both runs within ~2% of each other
+--duration 20 --rate 20              : 415 completed, 0 rejected, 0 telemetry drops
+--duration 20 --rate 75              : 1531 completed, 0 rejected, 0 telemetry drops
+--duration 45 --rate 150             : 6784 completed, 0 rejected, 170,401 telemetry samples DROPPED
+--duration 8  --rate 2000            : 16005 completed, 0 rejected, 819,961 telemetry samples DROPPED
+```
+`plot_benchmark.py --consistency` on the 2-repeat run: all 8 metrics
+(TTFT/inter-token P50/P95/P99, req/s, tok/s) within 0.2–20% coefficient of
+variation, well under the 25% threshold — reproducible.
+
+### RESOLVED: telemetry drops were a real bug in bench_cli.cpp, not the ring buffer or the sandbox
+
+Your two real runs on the M1 Mac confirmed the drops reproduce on real
+multi-core hardware — which ruled out my single-core-sandbox theory and
+sent me back to find the actual cause rather than guess again:
+
+```
+run 1 (duration=30, rate=150):  92,732 dropped,  65,536 collected
+run 2 (duration=15, rate=2000): 990,860 dropped,  65,536 collected
+```
+
+**The smoking gun: collected count was exactly 65,536 — the ring
+buffer's fixed capacity — in both runs, despite wildly different total
+volumes.** That's only possible if nothing ever drained the ring *during*
+the run at all. Went back to `bench_cli.cpp` and found exactly that: the
+`TelemetryFlusher` was constructed *after* the run finished, with a single
+`drain_once()` call — meaning the ring filled to capacity almost
+immediately and silently dropped nearly everything produced after that,
+for the entire run. `telemetry.hpp` itself was never the problem (Step 1's
+own tests, including a live background flusher, passed cleanly); this
+benchmark tool simply forgot to call `flusher.start()`.
+
+**Fix:** moved the `TelemetryFlusher` construction and `.start()` call to
+before the run begins, and replaced the post-hoc `drain_once()` with a
+proper `.stop()` (which joins the background thread and does one final
+drain) after the engine thread stops.
+
+**Re-ran the exact same conditions in this sandbox** (still single-core,
+so if anything a harder environment than your Mac) after the fix:
+
+```
+duration=30 rate=150:  4548 completed, 0 rejected, 0 telemetry drops (was 92,732)
+duration=15 rate=2000: 29996 completed, 0 rejected, 0 telemetry drops (was 990,860)
+```
+
+Zero drops in both, even at the higher rate that previously lost >90% of
+samples. Fixed.
+
+**Confirmed on real hardware.** Ran on the M1 Mac:
+
+```
+duration=30 rate=150:  dropped_telemetry_samples=0  (was 92,732)
+duration=15 rate=2000: dropped_telemetry_samples=0  (was 990,860 -- over 1M samples collected this time, zero dropped)
+```
+
+Fix holds. **Step 3 is done.**
+
+**The caveat about no real model/GPU compute yet still stands** — the
+token-generation rate (and therefore telemetry sample volume) this
+benchmark produces is almost certainly far higher than a real GPU-backed
+decode loop would sustain, since every decode step here is a near-instant
+placeholder push. That's a property of testing before Milestone 2's
+kernels are wired in, not something today's fix changes.
+
+### How to run it
+
+```bash
+cmake -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j$(sysctl -n hw.ncpu)
+
+./build/bench_cli --duration 30 --rate 100 --repeat 3 --output my_run
+pip install -r requirements-m4.txt
+python3 benchmarks/plot_benchmark.py my_run_summary.csv --consistency
+```
+
+For an actual multi-hour run (the literal DoD ask):
+```bash
+./build/bench_cli --duration 3600 --rate 100 --repeat 1 --output overnight_run
+```
+
+`benchmarks/sample_output/` has the real CSV and PNGs generated during
+self-verification above (one from a healthy low-rate run, one from the
+2000 req/s drop-heavy stress run), if you want to see what the output
+actually looks like before running it yourself.
+
+---
+
+## Step 4: End-to-end regression suite
+
+**`tests/test_e2e_regression.cpp`** (new, GTest, **unverified by me as a
+GTest binary** — same sandbox constraint as every other step; verified via
+the same mechanical plain-assert translation used for Steps 1–3, see
+below) — 3 tests that thread a real pipeline through ingress → scheduling
+→ simulated multi-process routing → output, tying Milestones 1, 3, and 4
+together for real rather than testing each layer in isolation:
+
+1. **`IngressThroughSchedulerAllSequencesAccountedFor`** — 60 sequences
+   through the real `IngressQueue` → `ContinuousBatchingScheduler`,
+   confirms every one finishes and Step 1's telemetry recorded exactly the
+   right sample counts for what actually ran.
+2. **`GeneratedTokensRouteAndReassembleCorrectly`** — takes tokens a real
+   scheduler run generated, feeds them as real `RoutedToken`s into a real
+   Milestone 3 multi-process cluster, confirms the reassembled output
+   accounts for every one.
+3. **`FullPipelineSurvivesWorkerFailureDuringRouting`** — the strongest
+   one: ingress → scheduling → routing, with a worker killed mid-routing
+   via Step 2's `chaos.hpp`, using Step 2's `route_batch_tolerant`.
+   Confirms the whole pipeline survives, every token is accounted for
+   (completed or cleanly failed), and the surviving shards keep serving.
+
+**One scope decision stated explicitly, not glossed over:** this suite
+does **not** include Milestone 2's real MLX/Metal gating kernel. Two
+independent reasons, both already true before this step started: that
+kernel needs real Apple GPU hardware this sandbox doesn't have, AND —
+per `README.md`'s own documented Milestone 3 "Known limitations" —
+`double_buffer_demo` (M2's kernel work) is **not yet wired into this C++
+engine at all**, regardless of hardware. There is no real integration
+point to call here yet. Faking one would produce a green checkmark that
+catches nothing. The scheduler's decode loop stands in for "the stage
+that produces tokens gating would route," clearly commented as such in
+the file, exactly the same stand-in `bench_cli.cpp` already uses. When
+Milestone 2's kernel eventually gets wired into `main.cpp`, that
+integration seam is exactly where this suite should gain a real gating
+stage — tracked here explicitly, not silently skipped.
+
+**`.github/workflows/ci.yml`** (new) — runs the full `aether_tests` suite
+(all 47 tests across every milestone) plus benchmark smoke tests (not
+performance gates — just "does it run without crashing") on GitHub's
+`macos-14` Apple Silicon runners on every push/PR, plus a separate
+ThreadSanitizer job using the project's own existing `-DAETHER_SANITIZE=thread`
+CMake option. Same scope caveat as the kernel: **Milestone 2's MLX/Metal
+work is not in this CI path**, both because hosted macOS runners don't
+reliably expose real Metal GPU compute for CI and because — again — it
+isn't wired into the buildable project yet regardless.
+
+**`CMakeLists.txt`** — `test_e2e_regression.cpp` added to `aether_tests`.
+
+### Self-verified in this sandbox
+
+Used the same discipline as every prior step: mechanically translated the
+actual GTest file's `TEST_F`/`EXPECT_*`/`ASSERT_*` calls into a
+plain-`assert` harness (via a small Python script doing the textual
+substitution, so the test *bodies* being run are byte-for-byte the same
+logic as what's in the real file, not a hand-rewritten approximation of
+it) and ran that:
+
+- Clean under `-fsanitize=address,undefined`.
+- Clean under `-fsanitize=thread`, 3 repeated runs.
+- Clean under plain `-O2`, 5 repeated runs (the third test has real
+  timing — a scheduled kill during routing — so repeatability mattered
+  more here than for a purely deterministic test).
+- All 3 scenarios passed every single time: full ingress→scheduler
+  accounting for 60/60 sequences with exact telemetry sample counts;
+  scheduler-generated tokens routing and reassembling correctly through a
+  real 4-process cluster; and the full pipeline surviving a worker kill
+  mid-routing with every token accounted for, the killed shard correctly
+  isolated, and the three surviving shards still serving.
+
+**`.github/workflows/ci.yml` itself is unverified** — this sandbox has no
+network access to actually trigger a GitHub Actions run. Every individual
+command in it is one already confirmed working on your real Mac
+(`cmake -B build`, `cmake --build build`, `./build/aether_tests`, the
+`-DAETHER_SANITIZE=thread` option), but the YAML itself, and
+runner-specific behavior on `macos-14`, has not been exercised.
+
+### What to run and report back
+
+```bash
+cmake -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j$(sysctl -n hw.ncpu)
+./build/aether_tests   # now 47 tests: the 44 from Steps 1-2 plus 3 new EndToEndRegression tests
+```
+
+If you push this to an actual GitHub repo, please also check that the
+Actions tab shows a run and paste back whether it passed — that's the one
+piece of this step I genuinely could not verify myself.
+
+---
+
+## Milestone 4 status: all 4 steps built and self-verified; awaiting your confirmation on Step 4
+
+Steps 1–3 are confirmed on your real M1 Mac with real numbers, including
+one real bug found and fixed from your data (the telemetry-flusher
+lifecycle bug in `bench_cli.cpp`, Step 3). Step 4 is built and
+self-verified in this sandbox the same way Steps 1–3 were before your
+confirmation; nothing about it has been contradicted by real-hardware
+numbers yet since it hasn't been run there.
+
+
 
 
 

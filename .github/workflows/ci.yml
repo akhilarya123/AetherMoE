@@ -1,0 +1,95 @@
+# AetherMoE — .github/workflows/ci.yml
+#
+# Milestone 4, Step 4: "a full pipeline test ... run as part of CI on
+# every change, catching integration regressions across milestones."
+#
+# SCOPE, STATED EXPLICITLY (this file is UNVERIFIED -- see caveat below):
+#
+#   Runs on GitHub's macos-14 hosted runners (Apple Silicon). Builds the
+#   full CMake project and runs `aether_tests` -- every suite across
+#   Milestones 1, 3, and 4 (RingBuffer, PageTable, Scheduler,
+#   Orchestration, TelemetryTest, Chaos, EndToEndRegression), plus a short
+#   smoke-test invocation of `bench_cli` and `bench_telemetry_overhead` to
+#   catch a build-breaking or crash-on-startup regression in either
+#   benchmark tool, not to assert specific performance numbers in CI
+#   (machine-dependent timing thresholds in a shared CI runner would be
+#   exactly the kind of flaky gate this project's own testing philosophy
+#   argues against -- see MILESTONE4_PROGRESS.md's telemetry-overhead
+#   section for why a single environment's numbers shouldn't be trusted
+#   without corroboration).
+#
+#   NOT included: Milestone 2's MLX/Metal kernel tests. GitHub-hosted
+#   macOS runners do not reliably expose real Metal GPU compute for CI
+#   workloads, and this repository's own README documents that the
+#   kernel work (`double_buffer_demo`) is not yet wired into the main
+#   CMake build in the first place -- there is nothing for this workflow
+#   to invoke there yet. If/when Milestone 2's kernel work is wired into
+#   the main build, this is exactly where a `test-metal` job should be
+#   added, gated to run only where real GPU hardware is confirmed
+#   available.
+#
+#   CAVEAT: this file has NOT been run on a real GitHub Actions runner as
+#   part of this work -- the sandbox this was written in has no network
+#   access to push to a repo or trigger Actions. Every command in it is
+#   the exact same command already confirmed to work on real hardware
+#   (see MILESTONE4_PROGRESS.md), but the YAML syntax and runner-specific
+#   behavior (toolchain versions actually preinstalled on macos-14,
+#   cache behavior, etc.) are unverified. Push this and confirm the first
+#   run succeeds before relying on it as a merge gate.
+
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+
+jobs:
+  test:
+    name: Build and test (macOS, Apple Silicon)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build -j$(sysctl -n hw.ncpu)
+
+      - name: Run full test suite (all milestones)
+        run: ./build/aether_tests
+
+      - name: Benchmark smoke test — bench_telemetry_overhead
+        run: ./build/bench_telemetry_overhead
+
+      - name: Benchmark smoke test — bench_cli (short run, not a performance gate)
+        run: ./build/bench_cli --duration 5 --rate 20 --repeat 1 --output ci_smoke
+
+      - name: Upload benchmark smoke-test CSV
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-benchmark-smoke-output
+          path: ci_smoke_summary.csv
+          if-no-files-found: ignore
+
+  # Milestone 4, Step 2's own tests already exercise ThreadSanitizer in
+  # this project's normal dev workflow (see MILESTONE4_PROGRESS.md) --
+  # running it in CI too, as a separate job so a TSan-only failure doesn't
+  # block on the primary suite finishing first.
+  sanitizers:
+    name: ThreadSanitizer build
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure (TSan)
+        run: cmake -B build-tsan -DAETHER_SANITIZE=thread
+
+      - name: Build (TSan)
+        run: cmake --build build-tsan -j$(sysctl -n hw.ncpu) --target aether_tests
+
+      - name: Run full test suite under ThreadSanitizer
+        run: ./build-tsan/aether_tests

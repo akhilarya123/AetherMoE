@@ -3,3 +3,5 @@ torch>=2.3.0
 numpy>=1.26.0
 pytest>=8.0.0
 hypothesis>=6.100.0
+pandas>=2.0.0
+matplotlib>=3.7.0

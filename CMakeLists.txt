@@ -94,6 +94,7 @@ add_executable(aether_tests
     tests/test_orchestration.cpp
     tests/test_telemetry.cpp
     tests/test_chaos.cpp
+    tests/test_e2e_regression.cpp
 )
 target_link_libraries(aether_tests PRIVATE aether_core GTest::gtest_main Threads::Threads)
 target_include_directories(aether_tests PRIVATE ${CMAKE_SOURCE_DIR}/src)
@@ -117,3 +118,13 @@ target_link_libraries(load_generator PRIVATE aether_core httplib::httplib nlohma
 # ---------------------------------------------------------------------------
 add_executable(bench_telemetry_overhead benchmarks/bench_telemetry_overhead.cpp)
 target_link_libraries(bench_telemetry_overhead PRIVATE aether_core Threads::Threads)
+
+# ---------------------------------------------------------------------------
+# Milestone 4, Step 3: benchmarking CLI (Poisson-arrival synthetic traffic,
+# mixed short/long lengths, P50/P95/P99 TTFT/inter-token latency and
+# throughput reporting via Step 1's telemetry subsystem). See
+# benchmarks/plot_benchmark.py (Python, needs requirements-m4.txt) for
+# turning its CSV output into the charts the spec asks for.
+# ---------------------------------------------------------------------------
+add_executable(bench_cli benchmarks/bench_cli.cpp)
+target_link_libraries(bench_cli PRIVATE aether_core Threads::Threads)

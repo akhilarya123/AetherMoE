@@ -1,0 +1,2 @@
+run_index,admitted,rejected_backpressure,completed,still_in_flight_at_cutoff,tokens_generated,wall_seconds,requests_per_second,tokens_per_second,ttft_p50_ns,ttft_p95_ns,ttft_p99_ns,ttft_mean_ns,ttft_count,inter_token_p50_ns,inter_token_p95_ns,inter_token_p99_ns,inter_token_mean_ns,inter_token_count,dropped_telemetry_samples
+0,4444,0,4444,0,158268,32.0041,138.857,4945.24,801958,1.28204e+06,1.30329e+06,769498,4444,708,2083,4541,955.575,153824,0
